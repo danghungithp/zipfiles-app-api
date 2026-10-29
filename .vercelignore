@@ -1,0 +1,9 @@
+.env
+.env.example
+__pycache__
+*.pyc
+run_tests.py
+test_client.py
+.git
+.vscode
+
