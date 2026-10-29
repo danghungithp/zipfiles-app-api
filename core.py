@@ -41,7 +41,7 @@ def sanitize_filename(filename: str) -> str:
 
 
 def create_zip_from_request(req):
-    """Hàm xử lý tạo ZIP dùng chung cho cả Local lẫn Vercel Serverless."""
+    """Hàm xử lý tạo ZIP linh hoạt, tự động tương thích với các định dạng output từ Power Automate."""
     data = req.get_json(silent=True)
     if not data or "files" not in data or not isinstance(data["files"], list):
         return jsonify({
@@ -72,28 +72,66 @@ def create_zip_from_request(req):
                         "message": f"Phần tử thứ {index} không hợp lệ."
                     }), 400
 
-                file_name = item.get("name", f"file_{index + 1}.txt")
-                safe_name = sanitize_filename(file_name)
-                content = item.get("content", "")
-                is_base64 = item.get("is_base64", False)
+                # 1. Tìm tên file (chấp nhận cả name, Name, filename, fileName, FileLeafRef, {FilenameWithExtension})
+                file_name = None
+                for name_key in ["name", "Name", "filename", "fileName", "FileName", "FileLeafRef", "{FilenameWithExtension}", "DisplayName"]:
+                    val = item.get(name_key)
+                    if val and str(val).strip():
+                        file_name = str(val).strip()
+                        break
+                
+                if not file_name:
+                    file_name = f"file_{index + 1}.txt"
 
+                safe_name = sanitize_filename(file_name)
+
+                # 2. Tìm nội dung file (chấp nhận content, Content, fileContent, body, $content)
+                raw_content = None
+                for content_key in ["content", "Content", "fileContent", "FileContent", "body", "Body", "$content"]:
+                    if content_key in item and item[content_key] is not None:
+                        raw_content = item[content_key]
+                        break
+
+                # Nếu Power Automate truyền nguyên body('Get_file_content') dạng object: {"$content-type": "...", "$content": "..."}
+                if isinstance(raw_content, dict):
+                    raw_content = raw_content.get("$content") or raw_content.get("content") or ""
+
+                if raw_content is None:
+                    raw_content = ""
+
+                # 3. Nhận diện is_base64 linh hoạt (boolean true, hoặc string "true", "True")
+                is_b64_raw = None
+                for b64_key in ["is_base64", "isBase64", "Is_base64", "IsBase64"]:
+                    if b64_key in item:
+                        is_b64_raw = item[b64_key]
+                        break
+
+                is_base64 = False
+                if isinstance(is_b64_raw, bool):
+                    is_base64 = is_b64_raw
+                elif isinstance(is_b64_raw, str):
+                    is_base64 = is_b64_raw.strip().lower() in ["true", "1", "yes"]
+                elif is_b64_raw is None:
+                    # Tự động phỏng đoán nếu là chuỗi base64 dài
+                    if isinstance(raw_content, str) and len(raw_content) > 100 and not raw_content.startswith("<"):
+                        is_base64 = True
+
+                # Chuyển đổi dữ liệu thành bytes
                 if is_base64:
                     try:
-                        if isinstance(content, str) and "," in content and "base64" in content.split(",")[0]:
-                            content = content.split(",", 1)[1]
-                        file_bytes = base64.b64decode(content)
-                    except Exception as b64_err:
-                        return jsonify({
-                            "status": "error",
-                            "message": f"Không thể giải mã base64 cho '{safe_name}': {str(b64_err)}"
-                        }), 400
+                        clean_b64 = raw_content
+                        if isinstance(clean_b64, str) and "," in clean_b64 and "base64" in clean_b64.split(",")[0]:
+                            clean_b64 = clean_b64.split(",", 1)[1]
+                        file_bytes = base64.b64decode(clean_b64)
+                    except Exception:
+                        file_bytes = raw_content.encode("utf-8") if isinstance(raw_content, str) else bytes(raw_content)
                 else:
-                    if isinstance(content, str):
-                        file_bytes = content.encode("utf-8")
-                    elif isinstance(content, bytes):
-                        file_bytes = content
+                    if isinstance(raw_content, str):
+                        file_bytes = raw_content.encode("utf-8")
+                    elif isinstance(raw_content, bytes):
+                        file_bytes = raw_content
                     else:
-                        file_bytes = str(content).encode("utf-8")
+                        file_bytes = str(raw_content).encode("utf-8")
 
                 zf.writestr(safe_name, file_bytes)
 
@@ -122,4 +160,3 @@ def create_zip_from_request(req):
             "status": "error",
             "message": f"Lỗi trong quá trình tạo file ZIP: {str(e)}"
         }), 500
-
