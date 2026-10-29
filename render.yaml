@@ -12,3 +12,4 @@ services:
         value: my-super-secret-powerautomate-key-2026
       - key: PYTHON_VERSION
         value: 3.12.0
+
